@@ -2,6 +2,7 @@
 #include <fstream> // to handle .wav audio
 #include <vector>
 #include <cstdint>
+#include <cstring>
 #include <algorithm>
 
 #include <string>
@@ -13,52 +14,61 @@ using namespace std;
 
 // this is the most complex part
 // reading the .wav file is described in this 44 byte header
-struct WAVHeader {
-    char chunk_ID[4];
-    uint32_t chunk_size;
-    char format[4];
-
-    char sub_chunk1_ID[4];
-    uint32_t sub_chunk1_size;
-    uint16_t audio_format;
-    uint16_t num_channels;
-    uint32_t sample_rate;
-    uint32_t byte_rate;
-    uint16_t block_align;
-    uint16_t bytes_per_sample;
-
-    char sub_chunk2_ID[4];
-    uint32_t sub_chunk2_size;
-
-    // this makes a total of 44 bytes
-};
 
 // in stream, we process the input
-vector<float> loadWavPayload(const string& filename, WAVHeader& header){
-
-    // we open the file in strict binary mode
+vector<float> loadWavPayload(const string& filename, WAVHeader& header) {
     ifstream file(filename, ios::binary);
-    if (!file){
-        throw runtime_error("Could not open file " + filename);
+    if (!file) {
+        throw runtime_error("FATAL: Could not open file " + filename);
     }
 
-    // what is reinterpret_cast
-    file.read(reinterpret_cast<char*>(&header), sizeof(WAVHeader));
+    // 1. Read the 36-byte format baseline
+    file.read(reinterpret_cast<char*>(&header), 36);
 
-    if (header.audio_format != 1 || header.bytes_per_sample != 16){
-        throw runtime_error("Error the engine requires uncompressed 16-bit PCM WAV file");
+    if (header.audio_format != 1 || header.bytes_per_sample != 16) {
+        throw runtime_error("ERROR: Engine requires uncompressed 16-bit PCM WAV.");
     }
 
-    // sub_chunk2_size = total bytes of audio data
-    // Since it's 16-bit audio (2 bytes per sample), we divide by 2 to get the total number of samples.
+    // 2. The Chunk Hunter (Patched for Byte Alignment)
+    char currentChunkID[4];
+    uint32_t currentChunkSize;
+    bool foundData = false;
+
+    while (file.read(currentChunkID, 4)) {
+        file.read(reinterpret_cast<char*>(&currentChunkSize), 4);
+        
+        if (strncmp(currentChunkID, "data", 4) == 0) {
+            foundData = true;
+            header.sub_chunk2_ID[0] = 'd';
+            header.sub_chunk2_ID[1] = 'a';
+            header.sub_chunk2_ID[2] = 't';
+            header.sub_chunk2_ID[3] = 'a';
+            header.sub_chunk2_size = currentChunkSize;
+            break;
+        } else {
+            // SECURITY PATCH: Force word-alignment to prevent memory offset corruption
+            uint32_t bytesToSkip = currentChunkSize;
+            if (bytesToSkip % 2 != 0) {
+                bytesToSkip += 1; 
+            }
+            file.seekg(bytesToSkip, ios::cur);
+        }
+    }
+
+    if (!foundData) {
+        throw runtime_error("FATAL: Could not locate the 'data' chunk.");
+    }
+
+    // 3. Safe Memory Allocation
     uint32_t numSamples = header.sub_chunk2_size / 2;
-
     vector<int16_t> rawIntBuffer(numSamples);
-    file.read(reinterpret_cast<char*>(rawIntBuffer.data()), header.sub_chunk2_size);
+    
+    // SECURITY PATCH: Read exactly what we allocated, no more.
+    file.read(reinterpret_cast<char*>(rawIntBuffer.data()), numSamples * 2);
 
-    // The DSP Bridge: Normalize integers to -1.0 to 1.0 floats
+    // 4. Floating Point Conversion
     vector<float> dspBuffer(numSamples);
-    for (size_t i = 0; i < numSamples; ++i){
+    for (size_t i = 0; i < numSamples; ++i) {
         dspBuffer[i] = static_cast<float>(rawIntBuffer[i]) / 32768.0f;
     }
 
@@ -90,51 +100,4 @@ void saveWavPayload(const string& filename, const WAVHeader& header, const vecto
     }
     
     file.write(reinterpret_cast<const char*>(intBuffer.data()), outHeader.sub_chunk2_size);
-}
-
-int main(){
-    WAVHeader inHeader;
-    vector<float> audioData;
-    vector<float> processedData;
-
-    try{
-        audioData = loadWavPayload("../assets/test1.wav", inHeader);
-
-        cout << "WAV loaded successfully" << endl;
-        cout << "Sample Rate: " << inHeader.sample_rate << "Hz" << endl;
-        cout << "Total Samples: " << audioData.size() << endl;
-    }
-    catch (const exception& e){
-        cerr << e.what() << endl;
-        return 1;
-    }
-
-    const size_t BUFFER_SIZE = 512;
-    processedData.reserve(audioData.size());
-
-    cout << "Starting DSP Pipeline...\n";
-
-    for (size_t i = 0; i < audioData.size(); i += BUFFER_SIZE){
-        size_t currentChunkSize = min(BUFFER_SIZE, audioData.size() - i);
-
-        vector<float> chunk(audioData.begin() + i , audioData.begin() + i + currentChunkSize);
-
-        // our DSP math will be here
-        ////
-
-        processedData.insert(processedData.end(), chunk.begin(), chunk.end());
-    }
-
-    cout << "DSP Processing Complete.\n";
-
-    // save the rendered output
-    try {
-        saveWavPayload("batman_output.wav", inHeader, processedData);
-        cout << "[+] Saved transformed voice to: batman_output.wav\n";
-    } catch (const exception& e) {
-        cerr << e.what() << "\n";
-        return 1;
-    }
-
-    return 0;
 }

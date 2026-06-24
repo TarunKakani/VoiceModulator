@@ -3,6 +3,8 @@
 #include <string>
 #include <cstdint>
 
+#pragma pack(push, 1)
+
 struct WAVHeader {
     char chunk_ID[4];
     uint32_t chunk_size;
@@ -22,6 +24,8 @@ struct WAVHeader {
 
     // this makes a total of 44 bytes
 };
+
+#pragma pack(pop)
 
 std::vector<float> loadWavPayload(const std::string& filename, WAVHeader& header);
 

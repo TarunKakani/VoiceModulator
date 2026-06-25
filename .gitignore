@@ -2,3 +2,5 @@ cycle.md
 src/batfleck
 src/batman_output.wav
 /assets
+.DS_Store
+.vscode

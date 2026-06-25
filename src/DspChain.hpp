@@ -12,8 +12,9 @@ private:
     float m_readIdxA;
     float m_readIdxB;
     int m_windowSize;
+    float m_prevFilterSample;
 
 public:
     DspChain(float sampleRate);
-    void processVoice(std::vector<float>& chunk, float ringModFreq, float foldThreshold, float pitchShiftRatio);
+    void processVoice(std::vector<float>& chunk, float foldThreshold, float pitchShiftRatio);
 };

@@ -1,56 +1,90 @@
 #include <iostream>
 #include <vector>
-#include <algorithm>
-#include "WavHandler.hpp"
+#include <portaudio.h> // will have compile with header location flags
 #include "DspChain.hpp"
 
 using namespace std;
 
-int main() {
-    WAVHeader header;
-    vector<float> audioData;
-    vector<float> processedData; // this will hold the output voice
+// this is the dsp engine and settings that will 
+// be passed in the portaudio function calls
+struct AudioContext{
+    DspChain* dspEngine;
+    float pitchRatio;
+    float foldThreshold;
+};
 
-    try{
-        audioData = loadWavPayload("../assets/test2.wav", header);
-        cout << "WAV File loaded. Total Samples: " << audioData.size() + "\n";
+// must strictly match the signature portaudio expects
+// this is the callback function of the frames that will be continuosly passed
+// used by the mic audio driver
+static int frameCallback(
+    const void *inputBuffer, 
+    void *outputBuffer,
+    unsigned long framesPerBuffer, 
+    const PaStreamCallbackTimeInfo* timeInfo, 
+    PaStreamCallbackFlags statusFlags, 
+    void *userData)
+{
+    float *in = (float*)inputBuffer;
+    float *out = (float*)outputBuffer;
+    AudioContext *ctx = (AudioContext*)userData;
+
+    // if the mic went silent or disconnected, output silence (every frame multiplies with zero)
+    if (in == nullptr) {
+        for (unsigned int i = 0; i < framesPerBuffer; i++) out[i] = 0.0f;
+        return paContinue;
     }
-    catch (const exception& e){
-        cerr << e.what() << endl;
+
+    vector<float> chunk(in, in + framesPerBuffer);
+
+    // our dsp math
+    ctx->dspEngine->processVoice(chunk, ctx->foldThreshold, ctx->pitchRatio);
+
+    for (unsigned int i = 0; i < framesPerBuffer; i++){
+        out[i] = chunk[i];
+    }
+
+    return paContinue;
+}
+
+int main(){
+    cout << "Starting Portaudio engine...\n";
+
+    PaError err = Pa_Initialize();
+    if (err != paNoError){
+        cerr << "PortAudio Error: " << Pa_GetErrorText(err) << "/n";
         return 1;
     }
 
-    const size_t BUFFER_SIZE = 512; // for the fake live DSP Loop
+    float sampleRate = 44100.0f;
+    DspChain engine(sampleRate);
 
-    // we already know how big the output file could be so
-    // reserve the ram upfront to make reading loop lightning fast
-    processedData.reserve(audioData.size());
+    AudioContext context;
+    context.dspEngine = &engine;
+    context.foldThreshold = 0.85f;
+    context.pitchRatio = 0.72f;
 
-    cout << "Starting DSP Pipeline...\n";
+    // open the live audio stream
+    PaStream *stream;
+    err = Pa_OpenDefaultStream(&stream, 1, 1, paFloat32, sampleRate, 512, frameCallback, &context);
 
-    DspChain dspEngine(static_cast<float>(header.sample_rate));
-
-    for (size_t i = 0; i < audioData.size(); i += BUFFER_SIZE){
-        // determine the chunk size
-        size_t currentChunkSize = min(BUFFER_SIZE, audioData.size() - i);
-
-        // create a temprory chunk but in live system this chunk is handed to us directly by the mac mic
-        vector<float> chunk(audioData.begin() + i, audioData.begin() + i + currentChunkSize);
-
-        dspEngine.processVoice(chunk, 35.0f, 0.7f, 0.75f);
-
-        processedData.insert(processedData.end(), chunk.begin(), chunk.end());
-    }
-
-    cout << "DSP Processing complete\n";
-
-    try {
-        saveWavPayload("batman_output.wav", header, processedData);
-        std::cout << "[+] Saved transformed voice to: batman_output.wav\n";
-    } catch (const std::exception& e) {
-        std::cerr << e.what() << "\n";
+    if (err != paNoError) {
+        cerr << "Stream Open Error: " << Pa_GetErrorText(err) << "\n";
         return 1;
     }
+
+    err = Pa_StartStream(stream);
+    if (err != paNoError) {
+        cerr << "Stream Start Error: " << Pa_GetErrorText(err) << "\n";
+        return 1;
+    }
+
+    cout << "Starting live voice modulation...Press Enter to stop\n";
+
+    cin.get();
+
+    err = Pa_CloseStream(stream);
+    Pa_Terminate();
+    cout << "Voice modulation ended.\n";
 
     return 0;
 }
